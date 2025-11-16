@@ -46,7 +46,7 @@ vcpkg install sqlite-flux
 include(FetchContent)
 FetchContent_Declare(
     sqlite_flux
-    GIT_REPOSITORY https://github.com/YourUsername/sqlite-flux.git
+    GIT_REPOSITORY https://github.com/a-alomran/sqlite-flux.git
     GIT_TAG v1.0.0
 )
 FetchContent_MakeAvailable(sqlite_flux)
