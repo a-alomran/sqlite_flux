@@ -4,7 +4,7 @@
 
 namespace sqlite_flux {
 
-	void printValue(const ColumnValue& value) {
+	void printValue(const ColumnValue& value_) {
 		std::visit(overloaded{
 			[](std::monostate) { std::cout << "NULL"; },
 			[](int64_t v) { std::cout << v; },
@@ -13,7 +13,7 @@ namespace sqlite_flux {
 			[](const std::vector<uint8_t>& v) {
 				std::cout << "[BLOB: " << v.size() << " bytes]";
 			}
-			}, value);
+			}, value_);
 	}
 
 } // namespace sqlite_flux

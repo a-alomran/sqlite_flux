@@ -38,9 +38,9 @@ namespace sqlite_flux
 			std::suspend_never initial_suspend() noexcept { return {}; }
 			std::suspend_always final_suspend() noexcept { return {}; }
 
-			void return_value(T value)
+			void return_value(T value_)
 			{
-				value_ = std::move(value);
+				value_ = std::move(value_);
 			} // end of return_value
 
 			void unhandled_exception()

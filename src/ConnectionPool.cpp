@@ -1,6 +1,7 @@
 // src/ConnectionPool.cpp
 #include "ConnectionPool.h"
 #include <stdexcept>
+#include <cassert>
 
 namespace sqlite_flux
 {
@@ -92,6 +93,17 @@ namespace sqlite_flux
 	{
 		shutdown_.store(true, std::memory_order_release);
 		cv_.notify_all();
+
+		// Check for outstanding connections (safety check)
+		size_t outstanding = outstandingConnections_.load(std::memory_order_acquire);
+		if (outstanding > 0)
+		{
+			// In debug builds, assert to catch misuse early
+			assert(false && "ConnectionPool destroyed with outstanding connections!");
+
+			// In release builds, log warning but don't crash
+			// Note: This is still undefined behavior if connections are used after pool destruction
+		} // end of if
 	} // end of ConnectionPool destructor
 
 	ConnectionPool::Connection ConnectionPool::acquire()
@@ -115,6 +127,8 @@ namespace sqlite_flux
 
 		auto conn = std::move(pool_.front());
 		pool_.pop();
+
+		outstandingConnections_.fetch_add(1, std::memory_order_relaxed);
 
 		return Connection(this, std::move(conn));
 	} // end of acquire
@@ -141,6 +155,8 @@ namespace sqlite_flux
 		auto conn = std::move(pool_.front());
 		pool_.pop();
 
+		outstandingConnections_.fetch_add(1, std::memory_order_relaxed);
+
 		return Connection(this, std::move(conn));
 	} // end of tryAcquire
 
@@ -150,6 +166,8 @@ namespace sqlite_flux
 		{
 			return;  // Nothing to release
 		} // end of if
+
+		outstandingConnections_.fetch_sub(1, std::memory_order_relaxed);
 
 		std::lock_guard lock(mutex_);
 		pool_.push(std::move(conn));
@@ -172,5 +190,10 @@ namespace sqlite_flux
 		std::lock_guard lock(mutex_);
 		return totalConnections_ - pool_.size();
 	} // end of inUse
+
+	size_t ConnectionPool::outstandingConnections() const
+	{
+		return outstandingConnections_.load(std::memory_order_relaxed);
+	} // end of outstandingConnections
 
 } // namespace sqlite_flux

@@ -5,9 +5,6 @@
 #include <string>
 #include <memory>
 #include <optional>
-#include <mutex>
-#include <shared_mutex>
-#include <atomic>
 
 // Forward declaration to avoid including sqlite3.h in header
 struct sqlite3;

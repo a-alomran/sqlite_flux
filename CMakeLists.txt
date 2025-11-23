@@ -1,6 +1,6 @@
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
-project(sqlite_flux VERSION 1.0.0 LANGUAGES CXX)
+project(sqlite_flux VERSION 1.1.0 LANGUAGES CXX)
 
 # =============================================================================
 # Project Options
@@ -42,6 +42,9 @@ set(LIBRARY_SOURCES
     src/ValueVisitor.cpp
     src/ConnectionPool.cpp
     src/AsyncExecutor.cpp
+    src/InsertBuilder.cpp
+    src/UpdateBuilder.cpp
+    src/DeleteBuilder.cpp
 )
 
 set(LIBRARY_HEADERS
@@ -52,6 +55,9 @@ set(LIBRARY_HEADERS
     include/ValueVisitor.h
     include/ConnectionPool.h
     include/AsyncExecutor.h
+    include/InsertBuilder.h
+    include/UpdateBuilder.h
+    include/DeleteBuilder.h
 )
 
 add_library(sqlite_flux STATIC
@@ -95,7 +101,7 @@ endif()
 # =============================================================================
 
 if(BUILD_EXAMPLES)
-    # Example 1: Main demo
+    # Example 1: Main demo (SELECT + DML operations)
     add_executable(sqlite_flux_demo
         examples/main.cpp
     )
@@ -107,19 +113,7 @@ if(BUILD_EXAMPLES)
         target_compile_options(sqlite_flux_demo PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
-    # Example 2: QueryBuilder usage
-    add_executable(sqlite_flux_usage
-        examples/QueryBuilderUsage.cpp
-    )
-    target_link_libraries(sqlite_flux_usage PRIVATE sqlite_flux::sqlite_flux)
-    
-    if(MSVC)
-        target_compile_options(sqlite_flux_usage PRIVATE /W4 /WX-)
-    else()
-        target_compile_options(sqlite_flux_usage PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-
-    # Example 3: Web application example (Connection Pool + Async)
+    # Example 2: Web application example (Connection Pool + Async + DML)
     add_executable(sqlite_flux_web
         examples/web_example.cpp
     )

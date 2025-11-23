@@ -21,7 +21,7 @@ namespace sqlite_flux
 	overloaded(Ts...) -> overloaded<Ts...>;
 
 	// Utility functions for working with ColumnValue
-	void printValue(const ColumnValue& value);
+	void printValue(const ColumnValue& value_);
 
 	// Type-safe value extraction
 	template<typename T>
@@ -40,9 +40,9 @@ namespace sqlite_flux
 	}
 
 	// Check if value is null
-	inline bool isNull(const ColumnValue& value) 
+	inline bool isNull(const ColumnValue& value_) 
 	{
-		return std::holds_alternative<std::monostate>(value);
+		return std::holds_alternative<std::monostate>(value_);
 	}
 
 } // namespace sqlite_flux

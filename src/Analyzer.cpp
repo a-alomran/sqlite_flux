@@ -1,4 +1,4 @@
-// src/Analyzer.cpp
+﻿// src/Analyzer.cpp
 #include "Analyzer.h"
 #include "ValueVisitor.h"
 #include <sqlite3.h>
@@ -14,7 +14,7 @@ namespace sqlite_flux
 	struct Analyzer::Impl
 	{
 		sqlite3* db = nullptr;
-		std::string lastError;
+		mutable std::string lastError;
 
 		// Thread-safety primitives
 		mutable std::mutex dbMutex_;              // Protects database operations
@@ -89,7 +89,7 @@ namespace sqlite_flux
 		if (pImpl_->db)
 		{
 			char* errMsg = nullptr;
-			int rc = sqlite3_exec(pImpl_->db, "PRAGMA journal_mode=WAL", nullptr, nullptr, &errMsg);
+			rc = sqlite3_exec(pImpl_->db, "PRAGMA journal_mode=WAL", nullptr, nullptr, &errMsg);
 
 			if (rc == SQLITE_OK)
 			{
@@ -202,7 +202,7 @@ namespace sqlite_flux
 
 	TableSchema Analyzer::getTableSchema(const std::string& tableName) const
 	{
-		// Quick atomic check (no lock needed)
+		// First check (optimistic read)
 		if (pImpl_->isCacheInitialized.load(std::memory_order_acquire))
 		{
 			// Try to read from cache with shared lock (concurrent reads allowed)
@@ -216,6 +216,12 @@ namespace sqlite_flux
 
 		// Not in cache, fetch from database with exclusive lock
 		std::unique_lock cacheLock(pImpl_->schemaMutex_);  // Exclusive for write
+		// ✅ DOUBLE-CHECK: Another thread might have populated it
+		auto it = pImpl_->schemaCache.find(tableName);
+		if (it != pImpl_->schemaCache.end())
+		{
+			return it->second;  // Found it now!
+		}
 		std::lock_guard dbLock(pImpl_->dbMutex_);          // Serialize DB access
 
 		TableSchema schema;
@@ -255,7 +261,7 @@ namespace sqlite_flux
 
 		if (sqlite3_prepare_v2(pImpl_->db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
 		{
-			const_cast<Impl*>(pImpl_.get())->lastError = sqlite3_errmsg(pImpl_->db);
+			pImpl_->lastError = sqlite3_errmsg(pImpl_->db);  // ✅ Clean
 			return results;
 		} // end of if
 
@@ -336,7 +342,18 @@ namespace sqlite_flux
 
 	void Analyzer::cacheAllSchemas()
 	{
+		// Quick check if already done
+		if (pImpl_->isCacheInitialized.load(std::memory_order_acquire))
+		{
+			return;  // ✅ Already cached
+		}
+
 		std::unique_lock lock(pImpl_->schemaMutex_);  // Exclusive lock for write
+		// ✅ Double-check after acquiring lock
+		if (pImpl_->isCacheInitialized.load(std::memory_order_acquire))
+		{
+			return;
+		}
 		std::lock_guard dbLock(pImpl_->dbMutex_);     // Serialize DB access
 
 		if (!pImpl_->db) return;

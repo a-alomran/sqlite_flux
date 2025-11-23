@@ -8,6 +8,7 @@
 #include <memory>
 #include <chrono>
 #include <optional>
+#include <atomic>
 
 namespace sqlite_flux
 {
@@ -67,6 +68,7 @@ namespace sqlite_flux
 		size_t size() const;
 		size_t available() const;
 		size_t inUse() const;
+		size_t outstandingConnections() const;
 
 	private:
 		// Release connection back to pool
@@ -82,6 +84,7 @@ namespace sqlite_flux
 
 		size_t totalConnections_;
 		std::atomic<bool> shutdown_{ false };
+		std::atomic<size_t> outstandingConnections_{ 0 };
 	}; // end of class ConnectionPool
 
 } // namespace sqlite_flux
