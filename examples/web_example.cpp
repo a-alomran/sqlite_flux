@@ -11,18 +11,31 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <iomanip>
+
+// Helper function to print pool statistics
+void printPoolStats(const sqlite_flux::ConnectionPool& pool)
+{
+	std::cout << "  Pool Stats: "
+		<< pool.available() << " available, "
+		<< pool.inUse() << " in use "
+		<< "(total: " << pool.size() << ")\n";
+} // end of printPoolStats
 
 // Simulated web request handler - SELECT
 void handleSelectRequest(int requestId, sqlite_flux::ConnectionPool& pool)
 {
 	try
 	{
-		std::cout << "[SELECT " << requestId << "] Starting\n";
+		std::cout << "[SELECT " << requestId << "] Acquiring connection...\n";
 
 		// Acquire connection from pool (RAII - auto-released)
 		auto conn = pool.acquire();
 
-		// Build and execute query
+		std::cout << "[SELECT " << requestId << "] ";
+		printPoolStats(pool);
+
+		// Build and execute query (thread-safe: each thread gets own QueryBuilder)
 		sqlite_flux::QueryFactory factory(*conn);
 		auto results = factory.FromTable("users")
 			.Columns("id", "username", "email")
@@ -31,6 +44,9 @@ void handleSelectRequest(int requestId, sqlite_flux::ConnectionPool& pool)
 			.Execute();
 
 		std::cout << "[SELECT " << requestId << "] Found " << results.size() << " users\n";
+
+		// Simulate processing time
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
 		// Connection auto-released here when conn goes out of scope
 	}
@@ -50,7 +66,7 @@ void handleInsertRequest(int requestId, sqlite_flux::ConnectionPool& pool, std::
 		auto conn = pool.acquire();
 		sqlite_flux::QueryFactory factory(*conn);
 
-		// Simulate user registration
+		// Simulate user registration with conflict resolution
 		auto userId = factory.InsertInto("users")
 			.Values({
 				{"username", std::string("user_") + std::to_string(requestId)},
@@ -58,9 +74,10 @@ void handleInsertRequest(int requestId, sqlite_flux::ConnectionPool& pool, std::
 				{"is_active", int64_t(1)},
 				{"created_at", int64_t(std::time(nullptr))}
 				})
+			.OrReplace()  // Use REPLACE if username exists
 			.Execute();
 
-		std::cout << "[INSERT " << requestId << "] Created user ID: " << userId << "\n";
+		std::cout << "[INSERT " << requestId << "] Created/Updated user ID: " << userId << "\n";
 		totalInserted.fetch_add(1, std::memory_order_relaxed);
 	}
 	catch (const std::exception& e)
@@ -104,7 +121,7 @@ void handleDeleteRequest(int requestId, sqlite_flux::ConnectionPool& pool, std::
 		auto conn = pool.acquire();
 		sqlite_flux::QueryFactory factory(*conn);
 
-		// Simulate deleting old sessions
+		// Simulate deleting old sessions (safe: requires WHERE clause)
 		auto rowsDeleted = factory.DeleteFrom("sessions")
 			.Where("user_id", int64_t(requestId))
 			.Where("expired", int64_t(1))
@@ -123,10 +140,12 @@ int main()
 {
 	try
 	{
-		std::cout << "=== sqlite_flux v1.1.0 Web Application Example ===\n\n";
+		std::cout << "=== sqlite_flux v1.1.0 Web Application Example ===\n";
+		std::cout << "Demonstrating thread-safe operations with ConnectionPool\n\n";
 
 		// Find database path
-		std::string dbPath = "../../../databases/testdb.db";  // From build/bin/Release
+		// testdb.db is in databases folder copy it into bin/debug / and release
+		std::string dbPath = "testdb.db";  // From build/bin/Release
 
 		// Create test database and tables if needed
 		{
@@ -154,18 +173,50 @@ int main()
 				)
 			)");
 
-			std::cout << "✓ Database initialized\n\n";
+			// Cache all schemas (thread-safe, single initialization)
+			setup.cacheAllSchemas();
+			std::cout << "✓ Database initialized (schema cached: " << (setup.isSchemaCached() ? "yes" : "no") << ")\n\n";
 		} // end of setup scope
 
 		// ====================================================================
-		// Example 1: Concurrent SELECT Operations
+		// Example 1: Pool Diagnostics & Connection Tracking
 		// ====================================================================
-		std::cout << "=== Example 1: Concurrent SELECT (Read-Heavy) ===\n";
+		std::cout << "=== Example 1: Connection Pool Diagnostics ===\n";
 		{
-			sqlite_flux::ConnectionPool pool(dbPath, 5, true);
+			sqlite_flux::ConnectionPool pool(dbPath, 3, true);
 
-			std::cout << "Connection pool: " << pool.size() << " connections\n";
-			std::cout << "Simulating 10 concurrent SELECT requests...\n\n";
+			std::cout << "Initial state:\n";
+			printPoolStats(pool);
+
+			std::cout << "\nAcquiring 2 connections in nested scopes...\n";
+			{
+				auto conn1 = pool.acquire();
+				printPoolStats(pool);
+
+				{
+					auto conn2 = pool.acquire();
+					printPoolStats(pool);
+					std::cout << "\nReleasing conn2 (going out of scope)...\n";
+				} // conn2 released here
+
+				printPoolStats(pool);
+				std::cout << "\nReleasing conn1 (going out of scope)...\n";
+			} // conn1 released here
+
+			printPoolStats(pool);
+			std::cout << "\n✓ All connections returned to pool\n\n";
+		} // end of scope
+
+		// ====================================================================
+		// Example 2: Concurrent SELECT Operations (Read-Heavy)
+		// ====================================================================
+		std::cout << "=== Example 2: Concurrent SELECT (Read-Heavy Workload) ===\n";
+		{
+			// Pool size smaller than threads to show connection reuse
+			sqlite_flux::ConnectionPool pool(dbPath, 3, true);
+
+			std::cout << "Pool size: " << pool.size() << " connections\n";
+			std::cout << "Simulating 10 concurrent SELECT requests (connection reuse)...\n\n";
 
 			std::vector<std::thread> threads;
 			auto startTime = std::chrono::steady_clock::now();
@@ -173,6 +224,7 @@ int main()
 			for (int i = 0; i < 10; ++i)
 			{
 				threads.emplace_back(handleSelectRequest, i + 1, std::ref(pool));
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));  // Stagger starts
 			} // end of for
 
 			for (auto& thread : threads)
@@ -184,13 +236,15 @@ int main()
 			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
 
 			std::cout << "\n✓ Completed in " << duration.count() << "ms\n";
-			std::cout << "  Pool available: " << pool.available() << "/" << pool.size() << "\n\n";
+			std::cout << "  Final state: ";
+			printPoolStats(pool);
+			std::cout << "\n";
 		} // end of scope
 
 		// ====================================================================
-		// Example 2: Concurrent INSERT Operations (User Registration)
+		// Example 3: Concurrent INSERT Operations (User Registration)
 		// ====================================================================
-		std::cout << "=== Example 2: Concurrent INSERT (User Registration) ===\n";
+		std::cout << "=== Example 3: Concurrent INSERT (User Registration) ===\n";
 		{
 			sqlite_flux::ConnectionPool pool(dbPath, 5, true);
 			std::atomic<int64_t> totalInserted{ 0 };
@@ -215,13 +269,19 @@ int main()
 
 			std::cout << "\n✓ Completed in " << duration.count() << "ms\n";
 			std::cout << "  Total users inserted: " << totalInserted.load() << "\n";
-			std::cout << "  Throughput: " << (totalInserted.load() * 1000 / duration.count()) << " inserts/sec\n\n";
+			if (duration.count() > 0)
+			{
+				std::cout << "  Throughput: " << (totalInserted.load() * 1000 / duration.count()) << " inserts/sec\n";
+			}
+			std::cout << "  ";
+			printPoolStats(pool);
+			std::cout << "\n";
 		} // end of scope
 
 		// ====================================================================
-		// Example 3: Concurrent UPDATE Operations (User Activity)
+		// Example 4: Concurrent UPDATE Operations (User Activity)
 		// ====================================================================
-		std::cout << "=== Example 3: Concurrent UPDATE (User Activity) ===\n";
+		std::cout << "=== Example 4: Concurrent UPDATE (User Activity) ===\n";
 		{
 			sqlite_flux::ConnectionPool pool(dbPath, 5, true);
 			std::atomic<int64_t> totalUpdated{ 0 };
@@ -246,13 +306,17 @@ int main()
 
 			std::cout << "\n✓ Completed in " << duration.count() << "ms\n";
 			std::cout << "  Total rows updated: " << totalUpdated.load() << "\n";
-			std::cout << "  Throughput: " << (totalUpdated.load() * 1000 / duration.count()) << " updates/sec\n\n";
+			if (duration.count() > 0)
+			{
+				std::cout << "  Throughput: " << (totalUpdated.load() * 1000 / duration.count()) << " updates/sec\n";
+			}
+			std::cout << "\n";
 		} // end of scope
 
 		// ====================================================================
-		// Example 4: Batch INSERT (High Performance)
+		// Example 5: Batch INSERT (High Performance)
 		// ====================================================================
-		std::cout << "=== Example 4: Batch INSERT (Event Logging) ===\n";
+		std::cout << "=== Example 5: Batch INSERT (Event Logging) ===\n";
 		{
 			sqlite_flux::ConnectionPool pool(dbPath, 3, true);
 			auto conn = pool.acquire();
@@ -273,7 +337,7 @@ int main()
 
 			auto startTime = std::chrono::steady_clock::now();
 
-			// Prepare batch insert
+			// Prepare batch insert (uses prepared statements internally)
 			auto batchInsert = factory.InsertInto("events")
 				.Values({
 					{"event_type", std::string("")},
@@ -282,7 +346,7 @@ int main()
 					})
 				.Prepare();
 
-			// Insert 1000 events
+			// Insert 1000 events in a transaction
 			for (int i = 0; i < 1000; ++i)
 			{
 				batchInsert.Values({
@@ -298,14 +362,50 @@ int main()
 			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
 
 			std::cout << "\n✓ Inserted " << totalInserted << " events in " << duration.count() << "ms\n";
-			std::cout << "  Throughput: " << (totalInserted * 1000 / duration.count()) << " inserts/sec\n";
-			std::cout << "  Average: " << (duration.count() / (double)totalInserted) << "ms per insert\n\n";
+			if (duration.count() > 0)
+			{
+				std::cout << "  Throughput: " << (totalInserted * 1000 / duration.count()) << " inserts/sec\n";
+			}
+			std::cout << "  Average: " << std::fixed << std::setprecision(3)
+				<< (duration.count() / (double)totalInserted) << "ms per insert\n\n";
 		} // end of scope
 
 		// ====================================================================
-		// Example 5: Safety Demonstration
+		// Example 6: AsyncExecutor (Asynchronous Operations)
 		// ====================================================================
-		std::cout << "=== Example 5: Safety Mechanisms ===\n";
+		std::cout << "=== Example 6: AsyncExecutor (Async/Await Pattern) ===\n";
+		{
+			sqlite_flux::ConnectionPool pool(dbPath, 5, true);
+			sqlite_flux::AsyncExecutor async(pool, 4);  // 4 worker threads
+
+			std::cout << "Executing async operations with " << async.availableConnections() << " connections...\n\n";
+
+			auto startTime = std::chrono::steady_clock::now();
+
+			// Launch async queries
+			auto countTask = async.count("users");
+			auto selectTask = async.selectAll("users");
+			auto existsTask = async.exists("users", "is_active = 1");
+
+			// Get results
+			auto userCount = countTask.get();
+			auto allUsers = selectTask.get();
+			auto hasActive = existsTask.get();
+
+			auto endTime = std::chrono::steady_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+
+			std::cout << "✓ Async operations completed in " << duration.count() << "ms\n";
+			std::cout << "  User count: " << userCount << "\n";
+			std::cout << "  Fetched " << allUsers.size() << " users\n";
+			std::cout << "  Has active users: " << (hasActive ? "yes" : "no") << "\n";
+			std::cout << "  Pending operations: " << async.pendingOperations() << "\n\n";
+		} // end of scope
+
+		// ====================================================================
+		// Example 7: Safety Mechanisms
+		// ====================================================================
+		std::cout << "=== Example 7: Safety Mechanisms ===\n";
 		{
 			sqlite_flux::ConnectionPool pool(dbPath, 1, true);
 			auto conn = pool.acquire();
@@ -344,13 +444,16 @@ int main()
 		} // end of scope
 
 		// ====================================================================
-		// Example 6: Mixed Workload (Realistic Web App)
+		// Example 8: Mixed Workload (Realistic Web App)
 		// ====================================================================
-		std::cout << "=== Example 6: Mixed Workload (Realistic Scenario) ===\n";
+		std::cout << "=== Example 8: Mixed Workload (Realistic Scenario) ===\n";
 		{
 			sqlite_flux::ConnectionPool pool(dbPath, 10, true);
 
-			std::cout << "Simulating 50 mixed operations (SELECT/INSERT/UPDATE)...\n\n";
+			std::cout << "Simulating 50 mixed operations (60% SELECT, 30% INSERT, 10% UPDATE)...\n";
+			std::cout << "Initial state: ";
+			printPoolStats(pool);
+			std::cout << "\n";
 
 			std::vector<std::thread> threads;
 			std::atomic<int64_t> totalInserted{ 0 };
@@ -386,10 +489,45 @@ int main()
 			std::cout << "\n✓ Completed 50 operations in " << duration.count() << "ms\n";
 			std::cout << "  Inserts: " << totalInserted.load() << "\n";
 			std::cout << "  Updates: " << totalUpdated.load() << "\n";
-			std::cout << "  Throughput: " << (50 * 1000 / duration.count()) << " ops/sec\n\n";
+			if (duration.count() > 0)
+			{
+				std::cout << "  Throughput: " << (50 * 1000 / duration.count()) << " ops/sec\n";
+			}
+			std::cout << "  Final state: ";
+			printPoolStats(pool);
+			std::cout << "\n";
 		} // end of scope
 
-		std::cout << "=== All web examples completed successfully! ===\n";
+		// ====================================================================
+		// Example 9: Schema Caching Performance
+		// ====================================================================
+		std::cout << "=== Example 9: Schema Caching Performance ===\n";
+		{
+			sqlite_flux::ConnectionPool pool(dbPath, 1, true);
+			auto conn = pool.acquire();
+
+			// First query - schema cached during pool initialization
+			auto start1 = std::chrono::high_resolution_clock::now();
+			for (int i = 0; i < 1000; ++i)
+			{
+				auto schema = conn->getTableSchema("users");
+			}
+			auto end1 = std::chrono::high_resolution_clock::now();
+			auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(end1 - start1);
+
+			std::cout << "✓ 1000 schema lookups (cached): " << duration1.count() << "μs\n";
+			std::cout << "  Average: " << (duration1.count() / 1000.0) << "μs per lookup\n";
+			std::cout << "  Schema is cached: " << (conn->isSchemaCached() ? "yes" : "no") << "\n\n";
+		} // end of scope
+
+		std::cout << "=== All examples completed successfully! ===\n";
+		std::cout << "\nThread-Safety Features Demonstrated:\n";
+		std::cout << "  ✓ ConnectionPool with atomic connection tracking\n";
+		std::cout << "  ✓ RAII connection guards (automatic release)\n";
+		std::cout << "  ✓ Thread-safe schema caching\n";
+		std::cout << "  ✓ Concurrent read/write operations\n";
+		std::cout << "  ✓ Safety mechanisms for mass operations\n";
+		std::cout << "  ✓ Async/await pattern with AsyncExecutor\n";
 
 		return 0;
 	}
