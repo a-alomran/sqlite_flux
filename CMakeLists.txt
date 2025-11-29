@@ -1,6 +1,6 @@
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
-project(sqlite_flux VERSION 1.1.0 LANGUAGES CXX)
+project(sqlite_flux VERSION 1.1.1 LANGUAGES CXX)
 
 # =============================================================================
 # Project Options
